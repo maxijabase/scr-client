@@ -84,15 +84,13 @@ public void OnPluginStart()
   g_cFlag = AutoExecConfig_CreateConVar("scr_flag", "", "If prefix is enabled, this admin flag is required to send message using the prefix", FCVAR_PROTECTED);
   g_cHostname = AutoExecConfig_CreateConVar("scr_hostname", "", "The hostname/displayname to send with messages. If left empty, it will use the server's hostname", FCVAR_NONE);
   
-  AutoExecConfig_CleanFile();
   AutoExecConfig_ExecuteFile();
+  AutoExecConfig_CleanFile();
 
   // Start basic event convars
   g_cPlayerEvent = AutoExecConfig_CreateConVar("scr_event_player", "0", "Enable player connect/disconnect events", FCVAR_NONE, true, 0.0, true, 1.0);
   g_cBotPlayerEvent = AutoExecConfig_CreateConVar("scr_event_botplayer", "0", "Enable bot player connect/disconnect events", FCVAR_NONE, true, 0.0, true, 1.0);
   g_cMapEvent = AutoExecConfig_CreateConVar("scr_event_map", "0", "Enable map start/end events", FCVAR_NONE, true, 0.0, true, 1.0);
-  
-  AutoExecConfig(true, "Source-Server-Relay");
   
   g_hSocket = SocketCreate(SOCKET_TCP, OnSocketError);
   
