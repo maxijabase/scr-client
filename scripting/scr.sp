@@ -115,6 +115,11 @@ public void OnPluginStart()
   HookEvent("player_disconnect", Event_OnPlayerConnectionChange);
 }
 
+public void Updater_OnLoaded()
+{
+  Updater_AddPlugin(UPDATE_URL);
+}
+
 public void OnConfigsExecuted()
 {
   g_cHostname.GetString(g_sHostname, sizeof g_sHostname);
