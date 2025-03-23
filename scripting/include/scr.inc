@@ -3,6 +3,8 @@
 #endif
 #define _scr_included
 
+#include <bytebuffer>
+
 #if !defined MAX_EVENT_NAME_LENGTH
 #define MAX_EVENT_NAME_LENGTH 128
 #endif
@@ -11,6 +13,9 @@
 #define MAX_COMMAND_LENGTH 512
 #endif
 
+/**
+ * Enums for message handling
+ */
 enum MessageType
 {
   MessageInvalid = 0, 
@@ -93,24 +98,14 @@ methodmap BaseMessage < ByteBuffer
     this.ReadString(sEntityName, iSize);
   }
   
-  public void WriteEntityName() {
-    this.WriteString(g_sHostname);
+  public void WriteEntityName(const char[] hostname)
+  {
+    this.WriteString(hostname);
   }
   
-  public void Dispatch()
+  public bool Dispatch()
   {
-    char sDump[MAX_BUFFER_LENGTH];
-    
-    int iLen = this.Dump(sDump, MAX_BUFFER_LENGTH);
-    
-    this.Close();
-    
-    if (!SocketIsConnected(g_hSocket))
-      return;
-    
-    // Len required
-    // If len is not included, it will stop at the first \0 terminator
-    SocketSend(g_hSocket, sDump, iLen);
+    return SCR_DispatchMessage(this);
   }
 }
 
@@ -128,12 +123,12 @@ methodmap AuthenticateMessage < BaseMessage
     return this.ReadString(sToken, iSize);
   }
   
-  public AuthenticateMessage(const char[] sToken)
+  public AuthenticateMessage(const char[] sToken, const char[] hostname)
   {
     BaseMessage m = BaseMessage();
     
     m.WriteByte(view_as<int>(MessageAuthenticate));
-    m.WriteEntityName();
+    m.WriteEntityName(hostname);
     
     m.WriteString(sToken);
     
@@ -226,12 +221,13 @@ methodmap ChatMessage < BaseMessage
     IdentificationType IDType, 
     const char[] sUserID, 
     const char[] sUsername, 
-    const char[] sMessage)
+    const char[] sMessage,
+    const char[] hostname)
   {
     BaseMessage m = BaseMessage();
     
     m.WriteByte(view_as<int>(MessageChat));
-    m.WriteEntityName();
+    m.WriteEntityName(hostname);
     
     m.WriteByte(view_as<int>(IDType));
     m.WriteString(sUserID);
@@ -267,12 +263,12 @@ methodmap EventMessage < BaseMessage
     return this.ReadString(sData, iSize);
   }
   
-  public EventMessage(const char[] sEvent, const char[] sData)
+  public EventMessage(const char[] sEvent, const char[] sData, const char[] hostname)
   {
     BaseMessage m = BaseMessage();
     
     m.WriteByte(view_as<int>(MessageEvent));
-    m.WriteEntityName();
+    m.WriteEntityName(hostname);
     
     m.WriteString(sEvent);
     m.WriteString(sData);
@@ -284,62 +280,114 @@ methodmap EventMessage < BaseMessage
 /**
  * Called upon sending a message via chat triggers
  * 
- * @param iClient 		Index of client that is sending the message
- * @param sClientName	Name of the client sending the message. The size of which is MAX_NAME_LENGTH
- * @param sMessage		Message content. The size of which is MAX_COMMAND_LENGTH
+ * @param iClient      Index of client that is sending the message
+ * @param sClientName  Name of the client sending the message. The size of which is MAX_NAME_LENGTH
+ * @param sMessage     Message content. The size of which is MAX_COMMAND_LENGTH
  */
 forward Action SCR_OnMessageSend(int iClient, char[] sClientName, char[] sMessage);
 
 /**
  * Called upon receiving a message
  * 
- * @param sEntityName	Entity name/hostname of the sending client
- * @param iIDType 		The IdentificationType of the ID
- * @param sID			String variant of the ID
- * @param sClientName	Name of the client that sent the message. The size of which is MAX_NAME_LENGTH
- * @param sMessage		Message content. The size of which is MAX_COMMAND_LENGTH
+ * @param sEntityName  Entity name/hostname of the sending client
+ * @param iIDType      The IdentificationType of the ID
+ * @param sID          String variant of the ID
+ * @param sClientName  Name of the client that sent the message. The size of which is MAX_NAME_LENGTH
+ * @param sMessage     Message content. The size of which is MAX_COMMAND_LENGTH
  */
 forward Action SCR_OnMessageReceive(const char[] sEntityName, IdentificationType iIDType, const char[] sID, char[] sClientName, char[] sMessage);
 
 /**
  * Called upon sending an event
  * 
- * @param sEvent		Name of the event. The size of which is MAX_EVENT_NAME_LENGTH
- * @param sData			Data of the event. The size of which is MAX_COMMAND_LENGTH
+ * @param sEvent       Name of the event. The size of which is MAX_EVENT_NAME_LENGTH
+ * @param sData        Data of the event. The size of which is MAX_COMMAND_LENGTH
  */
 forward Action SCR_OnEventSend(char[] sEvent, char[] sData);
 
 /**
  * Called upon receiving an event
  * 
- * @param sEvent		Name of the event. The size of which is MAX_EVENT_NAME_LENGTH
- * @param sData			Data of the event. The size of which is MAX_COMMAND_LENGTH
+ * @param sEvent       Name of the event. The size of which is MAX_EVENT_NAME_LENGTH
+ * @param sData        Data of the event. The size of which is MAX_COMMAND_LENGTH
  */
 forward Action SCR_OnEventReceive(char[] sEvent, char[] sData);
 
 /**
+ * Creates a chat message and sends it to the relay
+ *
+ * @param idType       Type of identification
+ * @param id           User ID string
+ * @param username     Username to display
+ * @param message      Message content
+ * @return             True if message was sent successfully, false otherwise
+ */
+native bool SCR_CreateChatMessage(IdentificationType idType, const char[] id, const char[] username, const char[] message);
+
+/**
+ * Creates an event message and sends it to the relay
+ *
+ * @param event        Event name
+ * @param data         Event data
+ * @return             True if event was sent successfully, false otherwise
+ */
+native bool SCR_CreateEventMessage(const char[] event, const char[] data);
+
+/**
  * Sends a message to the router
  * 
- * @param iClient   Client ID to use as name display (If left at 0, it will display "CONSOLE")
- * @param fmt       Format string
- * @param ...       Format arguments
+ * @param iClient      Client ID to use as name display (If left at 0, it will display "CONSOLE")
+ * @param fmt          Format string
+ * @param ...          Format arguments
+ * @return             True if message was sent successfully, false otherwise
  */
-native void SCR_SendMessage(int iClient = 0, const char[] fmt, any...);
+native bool SCR_SendMessage(int iClient = 0, const char[] fmt, any...);
 
 /**
  * Sends an event to the router
  * 
- * @param sEvent	Name of the event
- * @param sData		Data format string
- * @param ...		Format arguments
+ * @param sEvent       Name of the event
+ * @param sData        Data format string
+ * @param ...          Format arguments
+ * @return             True if event was sent successfully, false otherwise
  */
-native void SCR_SendEvent(const char[] sEvent, const char[] sData, any...);
+native bool SCR_SendEvent(const char[] sEvent, const char[] sData, any...);
+
+/**
+ * Checks if the relay is currently connected
+ *
+ * @return             True if connected, false otherwise
+ */
+native bool SCR_IsConnected();
+
+/**
+ * Gets the current hostname used by the relay
+ *
+ * @param buffer       Buffer to store the hostname
+ * @param maxlength    Maximum length of the buffer
+ * @return             Number of bytes written
+ */
+native int SCR_GetHostname(char[] buffer, int maxlength);
+
+/**
+ * Native for dispatching messages internally from methodmaps
+ * This is implemented in the main plugin
+ *
+ * @param message      The message to dispatch
+ * @return             True if message was sent successfully, false otherwise
+ */
+native bool SCR_DispatchMessage(BaseMessage message);
 
 #if !defined REQUIRE_PLUGIN
 public __pl_scr_SetNTVOptional()
 {
+  MarkNativeAsOptional("SCR_CreateChatMessage");
+  MarkNativeAsOptional("SCR_CreateEventMessage");
   MarkNativeAsOptional("SCR_SendMessage");
   MarkNativeAsOptional("SCR_SendEvent");
+  MarkNativeAsOptional("SCR_IsConnected");
+  MarkNativeAsOptional("SCR_GetHostname");
+  MarkNativeAsOptional("SCR_DispatchMessage");
 }
 #endif
 

@@ -6,20 +6,22 @@
 #include <socket>
 #include <updater>
 #include <steamworks>
+#include <bytebuffer>
+#include <uuid>
 
 #tryinclude <morecolors> // Morecolors defines a max buffer as well as bytebuffer but bytebuffer does if defined check
 #if !defined _colors_included
   #include <multicolors>
 #endif
 
-#include <bytebuffer>
+#include "include/scr.inc"
 
 #define PLUGIN_VERSION "1.0"
 #define UPDATE_URL "https://raw.githubusercontent.com/maxijabase/scr-client/main/updatefile.txt"
 
 char g_sHostname[64];
 char g_sHost[64] = "127.0.0.1";
-char g_sToken[64];
+char g_sToken[UUID_STRING_LENGTH + 1];
 char g_sPrefix[8];
 
 int g_iPort = 57452;
@@ -50,23 +52,27 @@ Handle g_hEventReceiveForward;
 
 EngineVersion g_evEngine;
 
-#include "include/scr"
-
 public Plugin myinfo = 
 {
   name = "Source Chat Relay", 
   author = "Fishy, updates by ampere", 
   description = "Communicate between Discord & In-Game, monitor server without being in-game, control the flow of messages and user base engagement!", 
-  version = "1.0", 
+  version = "1.1", 
   url = "https://keybase.io/RumbleFrog"
 };
 
 public APLRes AskPluginLoad2(Handle myself, bool late, char[] error, int err_max)
 {
-  RegPluginLibrary("Source-Chat-Relay");
+  RegPluginLibrary("scr");
   
+  // Register natives defined in scr.inc
   CreateNative("SCR_SendMessage", Native_SendMessage);
   CreateNative("SCR_SendEvent", Native_SendEvent);
+  CreateNative("SCR_IsConnected", Native_IsConnected);
+  CreateNative("SCR_GetHostname", Native_GetHostname);
+  CreateNative("SCR_CreateChatMessage", Native_CreateChatMessage);
+  CreateNative("SCR_CreateEventMessage", Native_CreateEventMessage);
+  CreateNative("SCR_DispatchMessage", Native_DispatchMessage);
   
   return APLRes_Success;
 }
@@ -141,23 +147,36 @@ public void OnConfigsExecuted()
     g_iFlag = FlagToBit(adminFlag);
   }
   
+  // Get server identifier information
   int ip[4];
   SteamWorks_GetPublicIP(ip);
   char sIP[64];
   Format(sIP, sizeof sIP, "%d.%d.%d.%d", ip[0], ip[1], ip[2], ip[3]);
   
+  // Build the file path for UUID storage
   File file;
   char configPath[PLATFORM_MAX_PATH];
-  BuildPath(Path_SM, configPath, sizeof configPath, "data/%s_%d.data", sIP, Server_GetPort());
+  BuildPath(Path_SM, configPath, sizeof configPath, "data/scr_uuid_%s_%d.data", sIP, Server_GetPort());
   
+  // Check if UUID file exists, if not create one with a new UUID
   if (FileExists(configPath, false))
   {
     file = OpenFile(configPath, "r", false);
     file.ReadString(g_sToken, sizeof g_sToken, -1);
-  } else
+    
+    // Validate the UUID and regenerate if invalid
+    if (!IsValidUUID(g_sToken))
+    {
+      delete file;
+      file = OpenFile(configPath, "w", false);
+      GenerateUUIDv4(g_sToken, sizeof g_sToken);
+      file.WriteString(g_sToken, true);
+    }
+  } 
+  else
   {
     file = OpenFile(configPath, "w", false);
-    GenerateRandomChars(g_sToken, sizeof g_sToken, 64);
+    GenerateUUIDv4(g_sToken, sizeof g_sToken);
     file.WriteString(g_sToken, true);
   }
   
@@ -173,7 +192,7 @@ public void OnConfigsExecuted()
   {
     char map[64];
     GetCurrentMap(map, sizeof map);
-    EventMessage("Map Start", map).Dispatch();
+    SCR_CreateEventMessage("Map Start", map);
   }
 }
 
@@ -214,12 +233,13 @@ public void OnSocketDisconnected(Handle socket, any arg)
 public void OnSocketError(Handle socket, int errorType, int errorNum, any ary)
 {
   StartReconnectTimer();
-  LogError("Socket error %i (errno %i) %s", errorType, errorNum, ary);
+  LogError("Socket error %i (errno %i)", errorType, errorNum);
 }
 
 public void OnSocketConnected(Handle socket, any arg)
 {
-  AuthenticateMessage(g_sToken).Dispatch();
+  AuthenticateMessage auth = AuthenticateMessage(g_sToken, g_sHostname);
+  SCR_DispatchMessage(auth);
   LogMessage("Socket Connected");
 }
 
@@ -322,14 +342,14 @@ public void HandlePackets(const char[] sBuffer, int iSize)
         SetFailState("Server denied our token. Stopping.");
       }
       
-      LogMessage("Successfully authenticated");
+      LogMessage("Successfully authenticated with UUID: %s", g_sToken);
       
       // If socket wasn't connected prior, do time check see if we are close to map start
       if (GetGameTime() <= 20.0 && g_cMapEvent.BoolValue)
       {
         char map[64];
         GetCurrentMap(map, sizeof map);
-        EventMessage("Map Start", map).Dispatch();
+        SCR_CreateEventMessage("Map Start", map);
       }
     }
     default:
@@ -376,7 +396,7 @@ public void Event_OnPlayerConnectionChange(Event event, const char[] name, bool 
   
   char eventType[32];
   Format(eventType, sizeof(eventType), "Player %s", isConnecting ? "Connected" : "Disconnected");
-  EventMessage(eventType, clientName).Dispatch();
+  SCR_CreateEventMessage(eventType, clientName);
 }
 
 public void OnMapEnd()
@@ -388,7 +408,7 @@ public void OnMapEnd()
   
   char map[64];
   GetCurrentMap(map, sizeof map);
-  EventMessage("Map Ended", map).Dispatch();
+  SCR_CreateEventMessage("Map Ended", map);
 }
 
 public void OnClientSayCommand_Post(int client, const char[] command, const char[] sArgs)
@@ -461,9 +481,10 @@ void DispatchMessage(int client, const char[] sMessage)
     return;
   }
   
-  ChatMessage(IdentificationSteam, id, name, message).Dispatch();
+  SCR_CreateChatMessage(IdentificationSteam, id, name, message);
 }
 
+// Native implementations
 public any Native_SendMessage(Handle plugin, int numParams)
 {
   if (numParams < 2)
@@ -475,7 +496,7 @@ public any Native_SendMessage(Handle plugin, int numParams)
   int client = GetNativeCell(1);
   FormatNativeString(0, 2, 3, sizeof buffer, _, buffer);
   DispatchMessage(client, buffer);
-  return;
+  return true;
 }
 
 public any Native_SendEvent(Handle plugin, int numParams)
@@ -483,6 +504,7 @@ public any Native_SendEvent(Handle plugin, int numParams)
   if (numParams < 2)
   {
     ThrowNativeError(SP_ERROR_NATIVE, "Insufficient parameters");
+    return false;
   }
   
   Action result;
@@ -499,21 +521,80 @@ public any Native_SendEvent(Handle plugin, int numParams)
   Call_Finish(result);
   
   if (result >= Plugin_Handled)
-    return 0;
+    return false;
   
-  EventMessage(event, data).Dispatch();
-  
-  return 0;
+  return SCR_CreateEventMessage(event, data);
 }
 
-void GenerateRandomChars(char[] buffer, int buffersize, int len)
+public any Native_IsConnected(Handle plugin, int numParams)
 {
-  char charset[] = "adefghijstuv6789!@#$%^klmwxyz01bc2345nopqr&+=";
-  
-  for (int i = 0; i < len; i++)
-  Format(buffer, buffersize, "%s%c", buffer, charset[GetRandomInt(0, sizeof charset - 1)]);
+  return SocketIsConnected(g_hSocket);
 }
 
+public any Native_GetHostname(Handle plugin, int numParams)
+{
+  int maxlen = GetNativeCell(2);
+  return SetNativeString(1, g_sHostname, maxlen);
+}
+
+public any Native_CreateChatMessage(Handle plugin, int numParams)
+{
+  IdentificationType idType = GetNativeCell(1);
+  
+  char id[64];
+  char username[MAX_NAME_LENGTH];
+  char message[MAX_COMMAND_LENGTH];
+  
+  GetNativeString(2, id, sizeof(id));
+  GetNativeString(3, username, sizeof(username));
+  GetNativeString(4, message, sizeof(message));
+  
+  ChatMessage chat = ChatMessage(idType, id, username, message, g_sHostname);
+  bool result = SCR_DispatchMessage(chat);
+  
+  return result;
+}
+
+public any Native_CreateEventMessage(Handle plugin, int numParams)
+{
+  char event[MAX_EVENT_NAME_LENGTH];
+  char data[MAX_COMMAND_LENGTH];
+  
+  GetNativeString(1, event, sizeof(event));
+  GetNativeString(2, data, sizeof(data));
+  
+  EventMessage eventMsg = EventMessage(event, data, g_sHostname);
+  bool result = SCR_DispatchMessage(eventMsg);
+  
+  return result;
+}
+
+public any Native_DispatchMessage(Handle plugin, int numParams)
+{
+  BaseMessage message = GetNativeCell(1);
+  
+  if (!message)
+  {
+    return false;
+  }
+  
+  char sDump[MAX_BUFFER_LENGTH];
+  
+  int iLen = message.Dump(sDump, MAX_BUFFER_LENGTH);
+  
+  message.Close();
+  
+  if (!SocketIsConnected(g_hSocket))
+    return false;
+  
+  // Len required
+  // If len is not included, it will stop at the first \0 terminator
+  SocketSend(g_hSocket, sDump, iLen);
+  
+  return true;
+}
+
+// Utility Functions
 void StripCharsByBytes(char[] sBuffer, int iSize, int iMaxBytes = 3)
 {
   int iBytes;
